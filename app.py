@@ -5,18 +5,18 @@ from aip import AipOcr
 import re
 import plotly.express as px
 import pandas as pd
-import streamlit as st
+import os
 
 # ========== 密码保护 ==========
 def check_password():
     """返回 True 表示验证通过"""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-    
+
     if not st.session_state.authenticated:
         password = st.text_input("请输入访问密码", type="password")
         if st.button("进入"):
-            if password == "123456":  # 你可以改成自己想要的密码
+            if password == st.secrets.get("PASSWORD", "123456"):
                 st.session_state.authenticated = True
                 st.rerun()
             else:
@@ -26,41 +26,55 @@ def check_password():
 
 # 检查密码
 if not check_password():
-    st.stop()  # 密码错误就停在这里，不显示后面的内容
+    st.stop()
 
-# ========== 下面是你原来的代码 ==========
-# 从 Excel 加载商户映射表
+# ========== 配置页面 ==========
+st.set_page_config(page_title="AI记账本", page_icon="📝")
+
+# ========== 加载商户映射表（增加异常处理） ==========
 @st.cache_data
 def load_merchant_map():
-    df = pd.read_excel("商品细表.xlsx", sheet_name="Sheet1")
     merchant_map = {}
-    for _, row in df.iterrows():
-        category = row["分类"]
-        keywords = str(row["商户关键词"]).split("、")
-        merchants = str(row["商户名称"]).split("、")
-        for kw in keywords:
-            merchant_map[kw] = category
-        for merchant in merchants:
-            merchant_map[merchant] = category
+    if os.path.exists("商品细表.xlsx"):
+        try:
+            df = pd.read_excel("商品细表.xlsx", sheet_name="Sheet1")
+            for _, row in df.iterrows():
+                category = row["分类"]
+                keywords = str(row["商户关键词"]).split("、")
+                merchants = str(row["商户名称"]).split("、")
+                for kw in keywords:
+                    if kw and kw != "nan":
+                        merchant_map[kw.strip()] = category
+                for merchant in merchants:
+                    if merchant and merchant != "nan":
+                        merchant_map[merchant.strip()] = category
+        except Exception as e:
+            st.warning(f"Excel映射表加载失败：{str(e)}，将使用默认分类")
+    # 内置基础商户兜底
+    base_map = {
+        "蜜雪冰城": "饮品", "瑞幸": "饮品", "茶百道": "饮品", "喜茶": "饮品",
+        "肯德基": "餐饮", "麦当劳": "餐饮", "海底捞": "餐饮",
+        "美团": "餐饮", "饿了么": "餐饮",
+        "优衣库": "衣服", "耐克": "衣服", "阿迪达斯": "衣服",
+        "滴滴": "交通", "哈啰": "交通", "地铁": "交通",
+        "良品铺子": "零食", "三只松鼠": "零食"
+    }
+    merchant_map.update(base_map)
     return merchant_map
 
-
-# 配置与初始化
-# ==============================================
-st.set_page_config(page_title="AI记账本", page_icon="📝")
-# 加载映射表
 merchant_category_map = load_merchant_map()
-# 百度OCR配置
-APP_ID = '7624192'
-API_KEY = 'gh66HbVzdO0KVrfNqB1k6Ovj'
-SECRET_KEY = 'TBODzQjZE0zPcbLmLh5r60jbqRNBFjRK'
-client = AipOcr(APP_ID, API_KEY, SECRET_KEY)
 
+# ========== 百度OCR（从secrets读取，更安全） ==========
+try:
+    APP_ID = st.secrets["APP_ID"]
+    API_KEY = st.secrets["API_KEY"]
+    SECRET_KEY = st.secrets["SECRET_KEY"]
+    client = AipOcr(APP_ID, API_KEY, SECRET_KEY)
+except:
+    client = None
+    st.warning("未配置百度OCR密钥，将无法使用图片识别功能")
 
-
-# ==============================================
-# 数据库函数（统一使用 bills.db，不再混乱）
-# ==============================================
+# ========== 数据库函数 ==========
 def init_db():
     conn = sqlite3.connect('bills.db')
     c = conn.cursor()
@@ -94,45 +108,40 @@ def get_monthly_summary():
     conn.close()
     return df
 
-# ==============================================
-# AI消费建议分析函数
-# ==============================================
+# ========== AI消费建议 ==========
 def get_ai_suggestion(df):
     if df.empty:
         return "📝 暂无消费数据，快来记账吧！"
-    
     total_expense = df['total'].sum()
     top_category = df.loc[df['total'].idxmax(), 'category']
     top_amount = df.loc[df['total'].idxmax(), 'total']
     top_ratio = round(top_amount / total_expense * 100, 1)
-    
     suggestion = f"💡 本月总支出 {total_expense:.2f} 元\n"
-    suggestion += f"📊 支出最高的分类是【{top_category}】，占比 {top_ratio}%，金额 {top_amount:.2f} 元\n\n"
-    
-    # 针对性建议
+    suggestion += f"📊 支出最高：【{top_category}】{top_ratio}%，{top_amount:.2f}元\n\n"
     if top_category in ["餐饮", "饮品"]:
-        suggestion += "✅ 建议：减少外卖和饮品消费，多自己做饭，每月可节省不少开支~"
+        suggestion += "✅ 建议：减少外卖，自己做饭更省钱~"
     elif top_category == "衣服":
-        suggestion += "✅ 建议：理性消费，避免冲动购物，优先购买刚需衣物"
+        suggestion += "✅ 建议：理性消费，避免冲动购物"
     elif top_category == "零食":
-        suggestion += "✅ 建议：控制零食采购量，既省钱又健康"
+        suggestion += "✅ 建议：控制零食，省钱又健康"
     elif top_category == "交通":
-        suggestion += "✅ 建议：优先选择公共交通，减少打车频次"
+        suggestion += "✅ 建议：多坐公共交通，减少打车"
     else:
-        suggestion += "✅ 建议：持续关注该分类支出，做好预算规划"
-    
+        suggestion += "✅ 建议：做好预算，理性消费"
     return suggestion
 
-# ==============================================
-# OCR 工具函数
-# ==============================================
+# ========== OCR 工具函数（增强版） ==========
 def get_auto_category(merchant):
+    if not merchant:
+        return None
     for key, cat in merchant_category_map.items():
         if key in merchant:
             return cat
-    return None
+    return "其他"
 
 def ocr_image(image_bytes):
+    if not client:
+        return ""
     result = client.basicGeneral(image_bytes)
     all_text = ""
     if "words_result" in result:
@@ -141,26 +150,29 @@ def ocr_image(image_bytes):
     return all_text
 
 def extract_amount(text):
-    match = re.search(r"(\d+\.\d{2})", text)
-    if match:
-        return float(match.group(1))
+    # 增强正则：支持 25 / 25.0 / 25.00 / ¥25 / 金额25
+    patterns = [
+        r"(\d+\.\d{1,2})",
+        r"(\d+)元",
+        r"¥(\d+)",
+        r"金额[：:](\d+)"
+    ]
+    for pat in patterns:
+        match = re.search(pat, text)
+        if match:
+            return float(match.group(1))
     return None
 
 def extract_merchant(text):
-    keywords = ["蜜雪冰城", "瑞幸", "茶百道", "喜茶", "肯德基", "麦当劳", "海底捞",
-                "美团", "饿了么", "优衣库", "耐克", "阿迪达斯", "滴滴", "哈啰",
-                "良品铺子", "三只松鼠", "拼多多", "淘宝", "京东"]
-    for kw in keywords:
-        if kw in text:
-            return kw
+    for name in merchant_category_map.keys():
+        if name in text:
+            return name
     return None
 
-# ==============================================
-# 页面主逻辑
-# ==============================================
+# ========== 页面主逻辑 ==========
 init_db()
 st.title("📝 AI智能记账本")
-st.write("上传支付截图，自动识别并记账")
+st.write("上传支付截图，自动识别金额、商户、分类")
 
 # 初始化状态
 if "current_amount" not in st.session_state:
@@ -182,111 +194,98 @@ if uploaded_file:
     st.image(image_bytes, caption="上传的截图", width=300)
 
     if not st.session_state.ocr_done:
-        with st.spinner("正在识别中..."):
+        with st.spinner("正在AI识别中..."):
             text = ocr_image(image_bytes)
         st.session_state.current_amount = extract_amount(text)
         st.session_state.current_merchant = extract_merchant(text)
-
-        if st.session_state.current_merchant:
-            auto_cat = get_auto_category(st.session_state.current_merchant)
-            if auto_cat:
-                st.session_state.current_category = auto_cat
-                st.session_state.need_manual = False
-            else:
-                st.session_state.need_manual = True
-        else:
-            st.session_state.need_manual = True
-
+        st.session_state.current_category = get_auto_category(st.session_state.current_merchant)
+        st.session_state.need_manual = (st.session_state.current_category is None)
         st.session_state.ocr_done = True
 
     # 显示识别结果
     st.subheader("📋 识别结果")
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("💰 金额", f"{st.session_state.current_amount} 元" if st.session_state.current_amount else "未识别到")
+        amt = st.session_state.current_amount
+        st.metric("💰 金额", f"{amt:.2f}元" if amt else "未识别")
     with col2:
-        st.metric("🏪 商户", st.session_state.current_merchant if st.session_state.current_merchant else "未识别到")
+        mer = st.session_state.current_merchant
+        st.metric("🏪 商户", mer if mer else "未识别")
 
     # 自动分类
-    if st.session_state.current_category and not st.session_state.need_manual:
-        st.success(f"🤖 已自动分类为：{st.session_state.current_category}")
+    cat = st.session_state.current_category
+    if cat and not st.session_state.need_manual:
+        st.success(f"🤖 自动分类：{cat}")
 
     # 手动分类
-    if st.session_state.need_manual:
-        st.subheader("🏷️ 请手动选择分类")
+    if st.session_state.need_manual or not cat:
+        st.subheader("🏷️ 手动选择分类")
         categories = ["餐饮", "饮品", "衣服", "零食", "交通", "美妆", "学习", "医疗", "其他"]
         cols = st.columns(4)
-        for i, cat in enumerate(categories):
-            if cols[i % 4].button(cat, key=f"manual_{cat}"):
-                st.session_state.current_category = cat
+        for i, c in enumerate(categories):
+            if cols[i % 4].button(c, key=f"cat_{c}"):
+                st.session_state.current_category = c
                 st.session_state.need_manual = False
                 st.rerun()
 
-    # 保存按钮
+    # 保存按钮（增加校验）
     if st.button("💾 保存记账", type="primary"):
-        if st.session_state.current_amount and st.session_state.current_category:
+        amt = st.session_state.current_amount
+        cat = st.session_state.current_category
+        if amt and amt > 0 and cat:
             save_bill(
-                st.session_state.current_amount,
+                amt,
                 st.session_state.current_merchant or "未知商户",
-                st.session_state.current_category
+                cat
             )
-            st.success(f"已保存！{st.session_state.current_merchant or '未知商户'} - {st.session_state.current_amount}元 - {st.session_state.current_category}")
-            
+            st.success("保存成功！")
             # 重置
-            st.session_state.ocr_done = False
-            st.session_state.current_amount = None
-            st.session_state.current_merchant = None
-            st.session_state.current_category = None
-            st.session_state.need_manual = False
+            for k in ["current_amount", "current_merchant", "current_category", "ocr_done", "need_manual"]:
+                st.session_state[k] = None if k != "ocr_done" else False
         else:
-            st.error("请先完成识别与分类")
+            st.error("请确保金额有效且已选择分类")
 
 else:
-    st.session_state.ocr_done = False
-    st.session_state.current_amount = None
-    st.session_state.current_merchant = None
-    st.session_state.current_category = None
-    st.session_state.need_manual = False
-    st.info("👆 请上传一张支付截图开始记账")
+    for k in ["current_amount", "current_merchant", "current_category", "ocr_done", "need_manual"]:
+        st.session_state[k] = None if k != "ocr_done" else False
+    st.info("👆 请上传支付截图开始记账")
 
-# ==============================================
-# 图表展示
-# ==============================================
+# ========== 图表 ==========
 st.markdown("---")
 st.subheader("📊 本月支出统计")
 df = get_monthly_summary()
 if not df.empty:
-    fig = px.pie(df, values='total', names='category', title='支出分类占比')
+    fig = px.pie(df, values='total', names='category', title='支出占比')
     st.plotly_chart(fig)
 else:
-    st.write("暂无数据，请先记账")
+    st.write("暂无数据")
 
-# ==============================================
-# AI消费建议模块
-# ==============================================
+# ========== AI建议 ==========
 st.markdown("---")
 st.subheader("💡 AI消费建议")
-suggestion = get_ai_suggestion(df)
-st.info(suggestion)
-# 显示历史账单
-st.subheader("📋 历史账单")
+st.info(get_ai_suggestion(df))
 
+# ========== 历史账单 ==========
+st.subheader("📋 历史账单")
 conn = sqlite3.connect('bills.db')
 df_bills = pd.read_sql_query("SELECT date, merchant, amount, category FROM bills ORDER BY date DESC", conn)
 conn.close()
 
 if not df_bills.empty:
-    # 重命名列名显示
     df_bills.columns = ["日期", "商户", "金额", "分类"]
     st.dataframe(df_bills, use_container_width=True)
-    
-    # 可选：添加删除按钮
+
+    # 清空账单（增加二次确认）
     if st.button("🗑️ 清空所有账单"):
-        conn = sqlite3.connect('bills.db')
-        conn.execute("DELETE FROM bills")
-        conn.commit()
-        conn.close()
-        st.success("已清空所有账单")
-        st.rerun()
+        st.session_state.confirm_clear = True
+    if st.session_state.get("confirm_clear"):
+        if st.button("⚠️ 确认清空（不可恢复）"):
+            conn = sqlite3.connect('bills.db')
+            conn.execute("DELETE FROM bills")
+            conn.commit()
+            conn.close()
+            st.success("已清空所有账单")
+            st.session_state.confirm_clear = False
+            st.rerun()
 else:
-    st.write("暂无账单，请先记账")
+    st.write("暂无账单")
