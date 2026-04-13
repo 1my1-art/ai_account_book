@@ -1,0 +1,7 @@
+streamlit
+pillow
+baidu-aip
+plotly
+pandas
+requests
+openpyxl
