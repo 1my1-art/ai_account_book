@@ -5,6 +5,30 @@ from aip import AipOcr
 import re
 import plotly.express as px
 import pandas as pd
+import streamlit as st
+
+# ========== 密码保护 ==========
+def check_password():
+    """返回 True 表示验证通过"""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if not st.session_state.authenticated:
+        password = st.text_input("请输入访问密码", type="password")
+        if st.button("进入"):
+            if password == "123456":  # 你可以改成自己想要的密码
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("密码错误")
+        return False
+    return True
+
+# 检查密码
+if not check_password():
+    st.stop()  # 密码错误就停在这里，不显示后面的内容
+
+# ========== 下面是你原来的代码 ==========
 # 从 Excel 加载商户映射表
 @st.cache_data
 def load_merchant_map():
